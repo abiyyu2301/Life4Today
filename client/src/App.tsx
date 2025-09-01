@@ -1,7 +1,7 @@
 // client/src/App.tsx
 
-import React, { useState, useRef, useCallback } from 'react';
-import { Upload, Camera, Share2, Check, X, Download } from 'lucide-react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { Upload, Camera, Share2, Check, X, Download, Shuffle, Heart } from 'lucide-react';
 
 interface Photo {
   id: string;
@@ -29,7 +29,7 @@ type Topic =
   | 'workstation' 
   | 'transportation';
 
-const TOPICS: Topic[] = [
+const ALL_TOPICS: Topic[] = [
   'food', 'ootd', 'cute animals', 'trending topics', 'selfies', 
   'views', 'drinks', 'watching/listening', 'quote of the day', 
   'workstation', 'transportation'
@@ -45,14 +45,31 @@ const Life4TodayApp: React.FC = () => {
   const [gameState, setGameState] = useState<'setup' | 'playing' | 'viewing'>('setup');
   const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null);
   const [allPlayers, setAllPlayers] = useState<Player[]>([]);
+  const [playerTopics, setPlayerTopics] = useState<Topic[]>([]);
+  const [lockedTopics, setLockedTopics] = useState<Set<Topic>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Get 4 random topics from the available pool
+  const getRandomTopics = useCallback((excludeTopics: Topic[] = []): Topic[] => {
+    const availableTopics = ALL_TOPICS.filter(topic => !excludeTopics.includes(topic));
+    const shuffled = [...availableTopics].sort(() => 0.5 - Math.random());
+    return shuffled.slice(0, 4);
+  }, []);
+
+  // Initialize player topics when starting a game
+  useEffect(() => {
+    if (gameState === 'playing' && playerTopics.length === 0) {
+      setPlayerTopics(getRandomTopics());
+    }
+  }, [gameState, playerTopics.length, getRandomTopics]);
 
   // Initialize new game
   const createGame = useCallback(() => {
     const newGameId = Math.random().toString(36).substring(2, 8).toUpperCase();
     setGameId(newGameId);
     setGameState('playing');
+    // Topics will be set by useEffect
   }, []);
 
   // Join existing game
@@ -60,6 +77,64 @@ const Life4TodayApp: React.FC = () => {
     setGameId(id);
     setCurrentPlayer(prev => ({ ...prev, name: playerName, id: Date.now().toString() }));
     setGameState('playing');
+    // Topics will be set by useEffect
+  }, []);
+
+  // Shuffle unwanted topics while keeping locked ones
+  const shuffleTopics = useCallback((topicToReplace?: Topic) => {
+    if (topicToReplace) {
+      // Replace specific topic
+      const currentTopicsWithoutReplaced = playerTopics.filter(t => t !== topicToReplace);
+      const usedTopics = [...currentTopicsWithoutReplaced, ...Array.from(lockedTopics)];
+      const availableTopics = ALL_TOPICS.filter(topic => !usedTopics.includes(topic));
+      
+      if (availableTopics.length > 0) {
+        const randomReplacement = availableTopics[Math.floor(Math.random() * availableTopics.length)];
+        setPlayerTopics(prev => prev.map(t => t === topicToReplace ? randomReplacement : t));
+      }
+    } else {
+      // Replace all unlocked topics
+      const lockedArray = Array.from(lockedTopics);
+      const unlockedTopics = playerTopics.filter(t => !lockedTopics.has(t));
+      const usedTopics = [...lockedArray];
+      const availableTopics = ALL_TOPICS.filter(topic => !usedTopics.includes(topic));
+      
+      const shuffledAvailable = [...availableTopics].sort(() => 0.5 - Math.random());
+      const newUnlockedTopics = shuffledAvailable.slice(0, unlockedTopics.length);
+      
+      // Combine locked topics with new unlocked topics
+      const newTopics = [...lockedArray];
+      newUnlockedTopics.forEach(topic => {
+        if (newTopics.length < 4) {
+          newTopics.push(topic);
+        }
+      });
+      
+      // Fill remaining slots if needed
+      while (newTopics.length < 4) {
+        const remaining = ALL_TOPICS.filter(t => !newTopics.includes(t));
+        if (remaining.length > 0) {
+          newTopics.push(remaining[Math.floor(Math.random() * remaining.length)]);
+        } else {
+          break;
+        }
+      }
+      
+      setPlayerTopics(newTopics);
+    }
+  }, [playerTopics, lockedTopics]);
+
+  // Toggle topic lock
+  const toggleTopicLock = useCallback((topic: Topic) => {
+    setLockedTopics(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(topic)) {
+        newSet.delete(topic);
+      } else {
+        newSet.add(topic);
+      }
+      return newSet;
+    });
   }, []);
 
   // Handle photo upload
@@ -87,11 +162,11 @@ const Life4TodayApp: React.FC = () => {
     return currentPlayer.photos.map(photo => photo.topic as Topic);
   }, [currentPlayer.photos]);
 
-  // Get missing topics
+  // Get missing topics (from player's assigned 4 topics)
   const getMissingTopics = useCallback((): Topic[] => {
     const completed = getCompletedTopics();
-    return TOPICS.filter(topic => !completed.includes(topic));
-  }, [getCompletedTopics]);
+    return playerTopics.filter(topic => !completed.includes(topic));
+  }, [getCompletedTopics, playerTopics]);
 
   // Generate sharing text
   const generateShareText = useCallback((type: 'completed' | 'reminder') => {
@@ -102,7 +177,9 @@ const Life4TodayApp: React.FC = () => {
       return `🎯 Life4Today Challenge Complete! 
 Game ID: ${gameId}
 Player: ${currentPlayer.name}
-✅ Completed all ${completed.length}/11 topics!
+✅ Completed all ${completed.length}/4 topics!
+
+My topics were: ${playerTopics.join(', ')}
 
 Join the fun: [Your App URL]?game=${gameId}`;
     } else {
@@ -110,13 +187,13 @@ Join the fun: [Your App URL]?game=${gameId}`;
 Game ID: ${gameId}
 Player: ${currentPlayer.name}
 
-Still need photos for:
-${missing.map(topic => `❌ ${topic}`).join('\n')}
+My assigned topics:
+${playerTopics.map(topic => completed.includes(topic) ? `✅ ${topic}` : `❌ ${topic}`).join('\n')}
 
-Completed: ${completed.length}/11
+Completed: ${completed.length}/4
 Join the game: [Your App URL]?game=${gameId}`;
     }
-  }, [gameId, currentPlayer.name, getCompletedTopics, getMissingTopics]);
+  }, [gameId, currentPlayer.name, getCompletedTopics, getMissingTopics, playerTopics]);
 
   // Generate collage
   const generateCollage = useCallback(async () => {
@@ -137,7 +214,7 @@ Join the game: [Your App URL]?game=${gameId}`;
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, 400, 600);
 
-    // Define photo positions (top-left, top-right, bottom-left, bottom-right)
+    // Define photo positions (2x2 grid)
     const positions = [
       { x: 20, y: 20, width: 170, height: 240 },
       { x: 210, y: 20, width: 170, height: 240 },
@@ -207,6 +284,7 @@ Join the game: [Your App URL]?game=${gameId}`;
               Life4Today
             </h1>
             <p className="text-gray-600 mt-2">Photo Challenge Game</p>
+            <p className="text-sm text-gray-500 mt-1">Get 4 random topics and create your collage!</p>
           </div>
 
           <div className="space-y-4">
@@ -259,39 +337,93 @@ Join the game: [Your App URL]?game=${gameId}`;
           </div>
           <div className="text-right">
             <div className="text-2xl font-bold text-gray-800">
-              {getCompletedTopics().length}/11
+              {getCompletedTopics().length}/4
             </div>
             <div className="text-sm text-gray-600">completed</div>
           </div>
         </div>
       </div>
 
-      {/* Topics Grid */}
+      {/* Topics Management */}
       <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
-        <h2 className="text-xl font-semibold mb-4">Photo Topics</h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          {TOPICS.map((topic) => {
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-semibold">Your Topics (4/11)</h2>
+          <button
+            onClick={() => shuffleTopics()}
+            disabled={lockedTopics.size === 4}
+            className="flex items-center gap-2 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all duration-200"
+          >
+            <Shuffle size={16} />
+            Shuffle Unlocked
+          </button>
+        </div>
+        
+        <p className="text-sm text-gray-600 mb-4">
+          Click the heart to lock topics you like, then shuffle to replace the unlocked ones!
+        </p>
+
+        <div className="grid grid-cols-2 gap-3">
+          {playerTopics.map((topic) => {
             const isCompleted = getCompletedTopics().includes(topic);
+            const isLocked = lockedTopics.has(topic);
+            
             return (
-              <button
-                key={topic}
-                onClick={() => setSelectedTopic(topic)}
-                className={`p-4 rounded-xl border-2 transition-all duration-200 ${
-                  isCompleted
-                    ? 'border-green-500 bg-green-50 text-green-700'
-                    : selectedTopic === topic
-                    ? 'border-pink-500 bg-pink-50 text-pink-700'
-                    : 'border-gray-200 hover:border-pink-300 text-gray-700'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium capitalize">{topic}</span>
-                  {isCompleted ? <Check size={16} /> : null}
-                </div>
-              </button>
+              <div key={topic} className="relative">
+                <button
+                  onClick={() => setSelectedTopic(topic)}
+                  disabled={isCompleted}
+                  className={`w-full p-4 rounded-xl border-2 transition-all duration-200 ${
+                    isCompleted
+                      ? 'border-green-500 bg-green-50 text-green-700 cursor-default'
+                      : selectedTopic === topic
+                      ? 'border-pink-500 bg-pink-50 text-pink-700'
+                      : isLocked
+                      ? 'border-purple-500 bg-purple-50 text-purple-700'
+                      : 'border-gray-200 hover:border-pink-300 text-gray-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium capitalize">{topic}</span>
+                    {isCompleted ? <Check size={16} /> : null}
+                  </div>
+                </button>
+                
+                {/* Lock/Unlock button */}
+                {!isCompleted && (
+                  <button
+                    onClick={() => toggleTopicLock(topic)}
+                    className={`absolute -top-2 -right-2 p-1 rounded-full border-2 border-white transition-all duration-200 ${
+                      isLocked
+                        ? 'bg-red-500 text-white hover:bg-red-600'
+                        : 'bg-gray-200 text-gray-600 hover:bg-red-100'
+                    }`}
+                  >
+                    <Heart size={12} fill={isLocked ? 'currentColor' : 'none'} />
+                  </button>
+                )}
+                
+                {/* Individual shuffle button */}
+                {!isCompleted && !isLocked && (
+                  <button
+                    onClick={() => shuffleTopics(topic)}
+                    className="absolute -bottom-2 -right-2 p-1 bg-blue-500 text-white rounded-full border-2 border-white hover:bg-blue-600 transition-all duration-200"
+                  >
+                    <Shuffle size={12} />
+                  </button>
+                )}
+              </div>
             );
           })}
         </div>
+        
+        {lockedTopics.size > 0 && (
+          <div className="mt-4 p-3 bg-purple-50 rounded-lg">
+            <p className="text-sm text-purple-700">
+              <Heart size={14} className="inline mr-1" fill="currentColor" />
+              Locked topics: {Array.from(lockedTopics).join(', ')}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Photo Upload */}
@@ -330,7 +462,7 @@ Join the game: [Your App URL]?game=${gameId}`;
       {currentPlayer.photos.length > 0 && (
         <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
           <h3 className="text-lg font-semibold mb-4">Your Photos</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             {currentPlayer.photos.map((photo) => (
               <div key={photo.id} className="relative">
                 <img
@@ -381,11 +513,11 @@ Join the game: [Your App URL]?game=${gameId}`;
         <div className="space-y-3">
           <button
             onClick={() => copyShareText('completed')}
-            disabled={getCompletedTopics().length < 11}
+            disabled={getCompletedTopics().length < 4}
             className="w-full flex items-center justify-center gap-2 bg-green-500 text-white px-6 py-3 rounded-xl hover:bg-green-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all duration-200"
           >
             <Share2 size={20} />
-            Share Completion (All Done!)
+            Share Completion (All 4 Done!)
           </button>
           
           <button
@@ -394,7 +526,7 @@ Join the game: [Your App URL]?game=${gameId}`;
             className="w-full flex items-center justify-center gap-2 bg-orange-500 text-white px-6 py-3 rounded-xl hover:bg-orange-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all duration-200"
           >
             <Share2 size={20} />
-            Share Reminder (Need Help!)
+            Share Progress
           </button>
         </div>
 
