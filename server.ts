@@ -349,17 +349,33 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Error handling
+// Error handling middleware
 app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error(error);
+  if (error.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'File too large. Maximum size is 5MB.' 
+    });
+  }
   res.status(500).json({ 
     success: false, 
-    message: 'Internal server error' 
+    message: error.message || 'Internal server error' 
   });
 });
 
+// Serve static files in production
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../client/build')));
+  
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
+  });
+}
+
 app.listen(PORT, () => {
   console.log(`Life4Today server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
 export default app;
