@@ -1,4 +1,4 @@
-// client/src/App.tsx - Complete fixed version
+// client/src/App.tsx - Fixed version with image compression and bug fixes
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Upload, Camera, Share2, Check, X, Download, Shuffle, Heart, Users, Eye, Clock, RefreshCw, LogOut, AlertTriangle } from 'lucide-react';
@@ -167,6 +167,53 @@ class SessionManager {
   }
 }
 
+// Image compression utility
+const compressImage = (file: File, maxSizeMB: number = 4, quality: number = 0.8): Promise<File> => {
+  return new Promise((resolve) => {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const img = new Image();
+    
+    img.onload = () => {
+      // Calculate new dimensions to keep aspect ratio
+      const maxDimension = 1920; // Max width or height
+      let { width, height } = img;
+      
+      if (width > height && width > maxDimension) {
+        height = (height * maxDimension) / width;
+        width = maxDimension;
+      } else if (height > maxDimension) {
+        width = (width * maxDimension) / height;
+        height = maxDimension;
+      }
+      
+      canvas.width = width;
+      canvas.height = height;
+      
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        canvas.toBlob((blob) => {
+          if (blob) {
+            const compressedFile = new File([blob], file.name, {
+              type: 'image/jpeg',
+              lastModified: Date.now()
+            });
+            resolve(compressedFile);
+          } else {
+            resolve(file);
+          }
+        }, 'image/jpeg', quality);
+      } else {
+        resolve(file);
+      }
+    };
+    
+    img.onerror = () => resolve(file);
+    img.src = URL.createObjectURL(file);
+  });
+};
+
 // API Service
 const API_BASE = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:3001/api';
 
@@ -209,8 +256,16 @@ class ApiService {
 
   static async uploadPhoto(gameId: string, playerId: string, photo: File, topic: string): Promise<{ success: boolean; photo?: Photo; message?: string }> {
     try {
+      // Compress image if it's larger than 4MB
+      let fileToUpload = photo;
+      if (photo.size > 4 * 1024 * 1024) {
+        console.log(`Compressing ${photo.name} (${Math.round(photo.size / (1024 * 1024))}MB)`);
+        fileToUpload = await compressImage(photo);
+        console.log(`Compressed to ${Math.round(fileToUpload.size / (1024 * 1024))}MB`);
+      }
+      
       const formData = new FormData();
-      formData.append('photo', photo);
+      formData.append('photo', fileToUpload);
       formData.append('topic', topic);
       const response = await fetch(`${API_BASE}/games/${gameId}/players/${playerId}/photos`, {
         method: 'POST',
@@ -547,20 +602,20 @@ const Life4TodayApp: React.FC = () => {
     return false;
   }, []);
 
+  // Fixed loadOtherPlayersPhotos to prevent infinite loops
   const loadOtherPlayersPhotos = useCallback(async () => {
-    if (!gameInfo || gameInfo.players.length === 0) return;
+    if (!gameInfo || gameInfo.players.length === 0 || !currentPlayer.id) return;
     
     const otherPlayers = gameInfo.players.filter(p => p.id !== currentPlayer.id);
-    const newPhotosMap = new Map(otherPlayersPhotos);
     
     for (const player of otherPlayers) {
-      if (!newPhotosMap.has(player.id) && !loadingPlayerPhotos.has(player.id)) {
+      if (!otherPlayersPhotos.has(player.id) && !loadingPlayerPhotos.has(player.id)) {
         setLoadingPlayerPhotos(prev => new Set(prev).add(player.id));
         
         try {
           const response = await ApiService.getPlayerPhotos(gameId, player.id);
           if (response.success && response.photos) {
-            newPhotosMap.set(player.id, response.photos);
+            setOtherPlayersPhotos(prev => new Map(prev).set(player.id, response.photos!));
           }
         } catch (error) {
           console.error(`Failed to load photos for player ${player.name}:`, error);
@@ -573,9 +628,7 @@ const Life4TodayApp: React.FC = () => {
         }
       }
     }
-    
-    setOtherPlayersPhotos(newPhotosMap);
-  }, [gameInfo, gameId, currentPlayer.id, otherPlayersPhotos, loadingPlayerPhotos]);
+  }, [gameId, currentPlayer.id, gameInfo]); // Removed circular dependencies
 
   const restorePlayerFromSession = useCallback((sessionData: UserSession): { player: Player; topics: Topic[]; locked: Topic[] } => {
     const topics = sessionData.playerTopics.filter((topic): topic is Topic => ALL_TOPICS.includes(topic as Topic));
@@ -588,6 +641,20 @@ const Life4TodayApp: React.FC = () => {
   }, []);
 
   const hasValidSession = !!session && sessionTimeRemaining > 0;
+
+  // Fixed loadGameInfo to prevent re-creation
+  const loadGameInfo = useCallback(async () => {
+    if (!gameId || !currentPlayer.id) return;
+    try {
+      const response = await ApiService.getGame(gameId);
+      if (response.success && response.game) {
+        setGameInfo(response.game);
+        setAllPlayers(response.game.players.filter((p: Player) => p.id !== currentPlayer.id));
+      }
+    } catch (err) {
+      console.error('Failed to load game info:', err);
+    }
+  }, [gameId, currentPlayer.id]); // Stable dependencies
 
   // Effects - Updated to use new session system
   useEffect(() => {
@@ -615,49 +682,67 @@ const Life4TodayApp: React.FC = () => {
     return () => clearInterval(interval);
   }, [session, clearSession]);
 
+  // Fixed useEffect to prevent infinite loop
   useEffect(() => {
     if (hasValidSession && session && gameState === 'setup') {
       restoreFromSession();
     }
-  }, [hasValidSession, session, gameState]);
+  }, [hasValidSession, gameState]); // Removed session from dependencies
 
   useEffect(() => {
     if (gameState === 'playing' && playerTopics.length === 0) {
       if (session?.playerTopics) {
-        setPlayerTopics(session.playerTopics as Topic[]);
+        const topics = session.playerTopics.filter((topic): topic is Topic => 
+          ALL_TOPICS.includes(topic as Topic)
+        );
+        setPlayerTopics(topics);
       } else {
         initializeTopics();
       }
     }
-  }, [gameState, playerTopics.length, initializeTopics, session]);
+  }, [gameState, playerTopics.length, initializeTopics, session?.playerTopics]);
 
+  // Fixed useEffect to prevent infinite loop
   useEffect(() => {
     const completedTopics = currentPlayer.photos.map(photo => photo.topic as Topic);
-    const manuallyLocked = session?.lockedTopics as Topic[] || [];
+    const manuallyLocked = (session?.lockedTopics || []).filter((t): t is Topic => 
+      ALL_TOPICS.includes(t as Topic)
+    );
     const newLockedTopics = new Set([...completedTopics, ...manuallyLocked.filter(t => !completedTopics.includes(t))]);
-    setLockedTopics(newLockedTopics);
     
-    if (session && gameState === 'playing') {
-      updateSession({
-        playerTopics: playerTopics.map(t => t.toString()),
-        lockedTopics: Array.from(newLockedTopics).map(t => t.toString())
-      });
+    // Only update if actually different
+    const currentLockedArray = Array.from(lockedTopics).sort();
+    const newLockedArray = Array.from(newLockedTopics).sort();
+    const isDifferent = currentLockedArray.length !== newLockedArray.length || 
+                       currentLockedArray.some((topic, index) => topic !== newLockedArray[index]);
+    
+    if (isDifferent) {
+      setLockedTopics(newLockedTopics);
+      
+      if (session && gameState === 'playing') {
+        updateSession({
+          playerTopics: playerTopics.map(t => t.toString()),
+          lockedTopics: Array.from(newLockedTopics).map(t => t.toString())
+        });
+      }
     }
-  }, [currentPlayer.photos, playerTopics, session, gameState, updateSession]);
+  }, [currentPlayer.photos, playerTopics, gameState]); // Removed circular dependencies
 
+  // Fixed useEffect for loading game info
   useEffect(() => {
-    if (gameState === 'playing' && gameId) {
+    if (gameState === 'playing' && gameId && currentPlayer.id) {
       loadGameInfo();
       const interval = setInterval(loadGameInfo, 10000);
       return () => clearInterval(interval);
     }
-  }, [gameState, gameId]);
+  }, [gameState, gameId, currentPlayer.id, loadGameInfo]);
 
+  // Fixed useEffect for loading other players photos
   useEffect(() => {
-    if (gameState === 'viewing' && gameInfo) {
+    if (gameState === 'viewing' && gameInfo && currentPlayer.id) {
       loadOtherPlayersPhotos();
     }
-  }, [gameState, gameInfo, loadOtherPlayersPhotos]);
+  }, [gameState, gameInfo?.players.length, currentPlayer.id]); // Stable dependencies
 
   // Handlers
   const restoreFromSession = useCallback(async () => {
@@ -715,20 +800,7 @@ const Life4TodayApp: React.FC = () => {
     } finally {
       setSyncing(false);
     }
-  }, [session, gameId, currentPlayer.id]);
-
-  const loadGameInfo = useCallback(async () => {
-    if (!gameId) return;
-    try {
-      const response = await ApiService.getGame(gameId);
-      if (response.success && response.game) {
-        setGameInfo(response.game);
-        setAllPlayers(response.game.players.filter((p: Player) => p.id !== currentPlayer.id));
-      }
-    } catch (err) {
-      console.error('Failed to load game info:', err);
-    }
-  }, [gameId, currentPlayer.id]);
+  }, [session, gameId, currentPlayer.id, loadGameInfo]);
 
   const createGame = useCallback(async () => {
     if (!hostName.trim()) {
@@ -800,6 +872,7 @@ const Life4TodayApp: React.FC = () => {
   const handlePhotoUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !selectedTopic) return;
+    
     setLoading(true);
     try {
       const response = await ApiService.uploadPhoto(gameId, currentPlayer.id, file, selectedTopic);
@@ -933,16 +1006,16 @@ const Life4TodayApp: React.FC = () => {
       img.src = ApiService.getPhotoUrl(photo.url);
     }
 
-    ctx.fillStyle = 'white';
-    ctx.font = 'bold 24px Arial';
-    ctx.fillText('Life4', 160, 300);
-    ctx.fillStyle = '#E91E63';
-    ctx.fillRect(210, 275, 40, 30);
-    ctx.fillStyle = 'white';
-    ctx.fillText('4', 225, 295);
-    ctx.fillStyle = 'white';
-    ctx.font = 'bold 20px Arial';
-    ctx.fillText('TODAY', 140, 330);
+    // ctx.fillStyle = 'white';
+    // ctx.font = 'bold 24px Arial';
+    // ctx.fillText('Life4', 160, 300);
+    // ctx.fillStyle = '#E91E63';
+    // ctx.fillRect(210, 275, 40, 30);
+    // ctx.fillStyle = 'white';
+    // ctx.fillText('4', 225, 295);
+    // ctx.fillStyle = 'white';
+    // ctx.font = 'bold 20px Arial';
+    // ctx.fillText('TODAY', 140, 330);
   }, [currentPlayer.photos]);
 
   const downloadCollage = useCallback(() => {
@@ -1008,8 +1081,7 @@ const Life4TodayApp: React.FC = () => {
     );
   }
 
-  // Viewing other players screen
-  // Enhanced Viewing other players screen
+  // Viewing other players screen - Cleaned up redundant indicators
   if (gameState === 'viewing') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-pink-400 to-purple-600 p-4">
@@ -1073,7 +1145,7 @@ const Life4TodayApp: React.FC = () => {
           </div>
         )}
 
-        {/* Players Grid */}
+        {/* Players Grid - Removed redundant progress indicators */}
         <div className="bg-white rounded-2xl shadow-lg p-6">
           <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
             <Users size={24} />
@@ -1088,18 +1160,16 @@ const Life4TodayApp: React.FC = () => {
               
               return (
                 <div key={player.id} className={`border rounded-xl p-4 ${isCurrentPlayer ? 'border-pink-300 bg-pink-50' : 'border-gray-200'}`}>
-                  {/* Player Header */}
+                  {/* Player Header - Simplified */}
                   <div className="flex justify-between items-center mb-4">
                     <div>
                       <h3 className="font-semibold text-lg flex items-center gap-2">
                         {player.name}
                         {isCurrentPlayer && <span className="text-pink-600 text-sm">(You)</span>}
                       </h3>
-                      <p className="text-sm text-gray-600">{player.photoCount}/4 topics completed</p>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-2xl font-bold text-gray-800">{player.photoCount}/4</div>
-                      {player.photoCount === 4 && <div className="text-green-600 text-sm font-medium">Complete!</div>}
+                      <p className="text-sm text-gray-600">
+                        {player.photoCount}/4 topics • {player.photoCount === 4 ? '✅ Complete!' : `${4 - player.photoCount} remaining`}
+                      </p>
                     </div>
                   </div>
 
@@ -1107,7 +1177,7 @@ const Life4TodayApp: React.FC = () => {
                   <div className="flex flex-wrap gap-2 mb-4">
                     {player.completedTopics.map((topic) => (
                       <span key={topic} className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm capitalize">
-                        ✅ {topic}
+                        {topic}
                       </span>
                     ))}
                   </div>
@@ -1179,26 +1249,6 @@ const Life4TodayApp: React.FC = () => {
                       </div>
                     </div>
                   )}
-
-                  {/* Progress Bar */}
-                  <div className="mt-4">
-                    <div className="flex justify-between text-sm text-gray-600 mb-1">
-                      <span>Progress</span>
-                      <span>{player.photoCount}/4</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div 
-                        className={`h-2 rounded-full transition-all duration-300 ${
-                          player.photoCount === 4 
-                            ? 'bg-green-500' 
-                            : player.photoCount >= 2 
-                            ? 'bg-yellow-500' 
-                            : 'bg-blue-500'
-                        }`}
-                        style={{ width: `${(player.photoCount / 4) * 100}%` }}
-                      ></div>
-                    </div>
-                  </div>
 
                   {/* Last Activity */}
                   <div className="mt-3 text-xs text-gray-500 text-center">
@@ -1335,6 +1385,9 @@ const Life4TodayApp: React.FC = () => {
               Cancel
             </button>
           </div>
+          <p className="text-xs text-gray-500 mt-2">
+            ℹ️ Large images (over 4MB) will be automatically compressed to ensure fast uploading.
+          </p>
         </div>
       )}
 
