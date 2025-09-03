@@ -21,6 +21,8 @@ if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads');
 }
 
+
+
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -69,6 +71,7 @@ interface Game {
   lastActivity: string;
 }
 
+
 // In-memory storage (replace with database in production)
 const games: Map<string, Game> = new Map();
 const topics = [
@@ -81,29 +84,153 @@ const topics = [
 const generateGameId = (): string => {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 };
+interface CleanupStats {
+  gamesRemoved: number;
+  filesRemoved: number;
+  diskSpaceFreed: number;
+  orphanedFilesRemoved: number;
+}
 
-const cleanupOldGames = () => {
+const getFileSize = (filePath: string): number => {
+  try {
+    const stats = fs.statSync(filePath);
+    return stats.size;
+  } catch (error) {
+    return 0;
+  }
+};
+
+const findOrphanedFiles = (): string[] => {
+  const orphanedFiles: string[] = [];
+  const uploadsDir = 'uploads';
+  
+  if (!fs.existsSync(uploadsDir)) {
+    return orphanedFiles;
+  }
+
+  try {
+    const allFiles = fs.readdirSync(uploadsDir);
+    const referencedFiles = new Set<string>();
+
+    // Collect all files referenced in games
+    for (const game of games.values()) {
+      game.players.forEach(player => {
+        player.photos.forEach(photo => {
+          referencedFiles.add(photo.filename);
+        });
+      });
+    }
+
+    // Find files not referenced by any game
+    allFiles.forEach(file => {
+      if (!referencedFiles.has(file)) {
+        orphanedFiles.push(file);
+      }
+    });
+
+    return orphanedFiles;
+  } catch (error) {
+    console.error('Error finding orphaned files:', error);
+    return orphanedFiles;
+  }
+};
+
+const getDiskUsage = (): { totalFiles: number; totalSizeMB: number } => {
+  const uploadsDir = 'uploads';
+  let totalFiles = 0;
+  let totalSize = 0;
+
+  if (fs.existsSync(uploadsDir)) {
+    try {
+      const files = fs.readdirSync(uploadsDir);
+      totalFiles = files.length;
+      
+      files.forEach(file => {
+        const filePath = path.join(uploadsDir, file);
+        totalSize += getFileSize(filePath);
+      });
+    } catch (error) {
+      console.error('Error calculating disk usage:', error);
+    }
+  }
+
+  return {
+    totalFiles,
+    totalSizeMB: Math.round(totalSize / (1024 * 1024) * 100) / 100
+  };
+};
+
+const cleanupOldGames = (): CleanupStats => {
   const now = Date.now();
   const dayInMs = 24 * 60 * 60 * 1000;
   
+  let stats: CleanupStats = {
+    gamesRemoved: 0,
+    filesRemoved: 0,
+    diskSpaceFreed: 0,
+    orphanedFilesRemoved: 0
+  };
+
+  console.log(`[${new Date().toISOString()}] Starting cleanup process...`);
+  console.log(`Total games before cleanup: ${games.size}`);
+
+  // Clean up old games
   for (const [gameId, game] of games.entries()) {
-    if (now - new Date(game.lastActivity).getTime() > dayInMs) {
+    const gameAge = now - new Date(game.lastActivity).getTime();
+    
+    if (gameAge > dayInMs) {
+      console.log(`Cleaning up game ${gameId} (${Math.round(gameAge / (60 * 60 * 1000))}h old)`);
+      
       // Clean up associated files
       game.players.forEach(player => {
         player.photos.forEach(photo => {
           const filePath = path.join('uploads', photo.filename);
           if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
+            const fileSize = getFileSize(filePath);
+            try {
+              fs.unlinkSync(filePath);
+              stats.filesRemoved++;
+              stats.diskSpaceFreed += fileSize;
+              console.log(`  Removed file: ${photo.filename} (${Math.round(fileSize / 1024)}KB)`);
+            } catch (error) {
+              console.error(`  Failed to remove file ${photo.filename}:`, error);
+            }
           }
         });
       });
+      
       games.delete(gameId);
+      stats.gamesRemoved++;
     }
   }
-};
 
-// Clean up old games every hour
-setInterval(cleanupOldGames, 60 * 60 * 1000);
+  // Clean up orphaned files (files not referenced by any game)
+  const orphanedFiles = findOrphanedFiles();
+  orphanedFiles.forEach(filename => {
+    const filePath = path.join('uploads', filename);
+    if (fs.existsSync(filePath)) {
+      const fileSize = getFileSize(filePath);
+      try {
+        fs.unlinkSync(filePath);
+        stats.orphanedFilesRemoved++;
+        stats.diskSpaceFreed += fileSize;
+        console.log(`  Removed orphaned file: ${filename} (${Math.round(fileSize / 1024)}KB)`);
+      } catch (error) {
+        console.error(`  Failed to remove orphaned file ${filename}:`, error);
+      }
+    }
+  });
+
+  console.log(`Cleanup complete:`, {
+    gamesRemoved: stats.gamesRemoved,
+    filesRemoved: stats.filesRemoved,
+    orphanedFilesRemoved: stats.orphanedFilesRemoved,
+    diskSpaceFreedMB: Math.round(stats.diskSpaceFreed / (1024 * 1024) * 100) / 100,
+    remainingGames: games.size
+  });
+
+  return stats;
+};
 
 // API Routes
 

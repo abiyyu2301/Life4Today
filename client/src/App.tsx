@@ -1,7 +1,7 @@
-// client/src/App.tsx
+// client/src/App.tsx - Complete fixed version
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Upload, Camera, Share2, Check, X, Download, Shuffle, Heart, Users, Eye, Clock, RefreshCw, LogOut } from 'lucide-react';
+import { Upload, Camera, Share2, Check, X, Download, Shuffle, Heart, Users, Eye, Clock, RefreshCw, LogOut, AlertTriangle } from 'lucide-react';
 
 // Types and constants
 interface Photo {
@@ -48,7 +48,7 @@ const ALL_TOPICS: Topic[] = [
 
 type GameState = 'setup' | 'playing' | 'viewing';
 
-// Session Management
+// Fixed Session Management
 interface UserSession {
   gameId: string;
   playerId: string;
@@ -57,10 +57,12 @@ interface UserSession {
   lockedTopics: string[];
   createdAt: number;
   lastActive: number;
+  renewals: number; // Track number of renewals
 }
 
 const SESSION_KEY = 'life4today_session';
-const SESSION_DURATION = 4 * 60 * 60 * 1000; // 4 hours
+const SESSION_DURATION = 12 * 60 * 60 * 1000; // 12 hours in milliseconds
+const MAX_RENEWALS = 2; // Allow 2 renewals (total 36 hours max)
 
 class SessionManager {
   static saveSession(session: UserSession): void {
@@ -77,6 +79,12 @@ class SessionManager {
       const sessionData = localStorage.getItem(SESSION_KEY);
       if (!sessionData) return null;
       const session: UserSession = JSON.parse(sessionData);
+      
+      // Ensure renewals field exists for backward compatibility
+      if (session.renewals === undefined) {
+        session.renewals = 0;
+      }
+      
       if (this.isSessionExpired(session)) {
         this.clearSession();
         return null;
@@ -105,27 +113,56 @@ class SessionManager {
   }
 
   static isSessionExpired(session: UserSession): boolean {
-    return (Date.now() - session.lastActive) > SESSION_DURATION;
+    const now = Date.now();
+    const sessionAge = now - session.createdAt;
+    const maxDuration = SESSION_DURATION * (session.renewals + 1);
+    return sessionAge > maxDuration;
   }
 
-  static renewSession(): void {
+  static canRenewSession(session: UserSession): boolean {
+    return session.renewals < MAX_RENEWALS;
+  }
+
+  static renewSession(): boolean {
     const session = this.loadSession();
-    if (session) {
-      this.updateSession({ lastActive: Date.now() });
+    if (!session || !this.canRenewSession(session)) {
+      return false;
     }
+    this.updateSession({ renewals: session.renewals + 1, lastActive: Date.now() });
+    return true;
   }
 
-  static getSessionInfo(): { isActive: boolean; timeRemaining: number } {
+  static getSessionInfo(): { 
+    isActive: boolean; 
+    timeRemaining: number; 
+    canRenew: boolean;
+    renewalsLeft: number;
+  } {
     const session = this.loadSession();
-    if (!session) return { isActive: false, timeRemaining: 0 };
-    const timeRemaining = SESSION_DURATION - (Date.now() - session.lastActive);
-    return { isActive: timeRemaining > 0, timeRemaining: Math.max(0, timeRemaining) };
+    if (!session) {
+      return { isActive: false, timeRemaining: 0, canRenew: false, renewalsLeft: 0 };
+    }
+
+    const now = Date.now();
+    const sessionAge = now - session.createdAt;
+    const maxDuration = SESSION_DURATION * (session.renewals + 1);
+    const timeRemaining = Math.max(0, maxDuration - sessionAge);
+    
+    return {
+      isActive: timeRemaining > 0,
+      timeRemaining,
+      canRenew: this.canRenewSession(session),
+      renewalsLeft: MAX_RENEWALS - session.renewals
+    };
   }
 
   static formatTimeRemaining(milliseconds: number): string {
     const hours = Math.floor(milliseconds / (60 * 60 * 1000));
     const minutes = Math.floor((milliseconds % (60 * 60 * 1000)) / (60 * 1000));
-    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    return `${minutes}m`;
   }
 }
 
@@ -242,6 +279,8 @@ class ApiService {
 // Session Info Component
 interface SessionInfoProps {
   timeRemaining: number;
+  canRenew: boolean;
+  renewalsLeft: number;
   onSync: () => void;
   onRenew: () => void;
   onClear: () => void;
@@ -249,37 +288,86 @@ interface SessionInfoProps {
   formatTime: (ms: number) => string;
 }
 
-const SessionInfo: React.FC<SessionInfoProps> = ({ timeRemaining, onSync, onRenew, onClear, isSyncing = false, formatTime }) => {
-  const isLowTime = timeRemaining < 30 * 60 * 1000;
+const SessionInfo: React.FC<SessionInfoProps> = ({
+  timeRemaining, canRenew, renewalsLeft, onSync, onRenew, onClear, isSyncing = false, formatTime
+}) => {
+  const isLowTime = timeRemaining < 60 * 60 * 1000; // Less than 1 hour
+  const isCriticalTime = timeRemaining < 30 * 60 * 1000; // Less than 30 minutes
+
+  const getStatusColor = () => {
+    if (isCriticalTime) return 'red';
+    if (isLowTime) return 'orange';
+    return 'green';
+  };
+
+  const statusColor = getStatusColor();
+
   return (
-    <div className={`rounded-xl p-3 ${isLowTime ? 'bg-orange-50 border border-orange-200' : 'bg-green-50 border border-green-200'}`}>
+    <div className={`rounded-xl p-3 border ${
+      statusColor === 'red' ? 'bg-red-50 border-red-200' :
+      statusColor === 'orange' ? 'bg-orange-50 border-orange-200' :
+      'bg-green-50 border-green-200'
+    }`}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Clock size={16} className={isLowTime ? 'text-orange-600' : 'text-green-600'} />
-          <span className={`text-sm font-medium ${isLowTime ? 'text-orange-700' : 'text-green-700'}`}>
+          {isCriticalTime && <AlertTriangle size={16} className="text-red-600" />}
+          <Clock size={16} className={`${
+            statusColor === 'red' ? 'text-red-600' :
+            statusColor === 'orange' ? 'text-orange-600' :
+            'text-green-600'
+          }`} />
+          <span className={`text-sm font-medium ${
+            statusColor === 'red' ? 'text-red-700' :
+            statusColor === 'orange' ? 'text-orange-700' :
+            'text-green-700'
+          }`}>
             Session: {formatTime(timeRemaining)}
           </span>
+          {renewalsLeft > 0 && (
+            <span className="text-xs text-gray-500">
+              ({renewalsLeft} renewal{renewalsLeft !== 1 ? 's' : ''} left)
+            </span>
+          )}
         </div>
+        
         <div className="flex items-center gap-2">
-          <button onClick={onSync} disabled={isSyncing} className="flex items-center gap-1 text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 disabled:opacity-50">
+          <button onClick={onSync} disabled={isSyncing} className="flex items-center gap-1 text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors" title="Sync with server">
             <RefreshCw size={12} className={isSyncing ? 'animate-spin' : ''} />
             {isSyncing ? 'Syncing...' : 'Sync'}
           </button>
-          {isLowTime && (
-            <button onClick={onRenew} className="flex items-center gap-1 text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600">
+          
+          {isLowTime && canRenew && (
+            <button onClick={onRenew} className="flex items-center gap-1 text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 transition-colors" title={`Renew session for 12 more hours (${renewalsLeft} renewal${renewalsLeft !== 1 ? 's' : ''} left)`}>
               <Clock size={12} />
-              Renew
+              Renew (+12h)
             </button>
           )}
-          <button onClick={onClear} className="flex items-center gap-1 text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600">
+          
+          <button onClick={onClear} className="flex items-center gap-1 text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600 transition-colors" title="End session">
             <LogOut size={12} />
             End
           </button>
         </div>
       </div>
-      {isLowTime && (
+      
+      {isCriticalTime && (
+        <div className="mt-2 text-xs text-red-600">
+          <AlertTriangle size={12} className="inline mr-1" />
+          <strong>Critical:</strong> Session expires very soon!
+          {canRenew && ' Click "Renew" to extend.'}
+          {!canRenew && ' No renewals left. Session will end soon.'}
+        </div>
+      )}
+      
+      {isLowTime && !isCriticalTime && canRenew && (
         <p className="text-xs text-orange-600 mt-1">
-          ⚠️ Session expires soon. Click "Renew" to extend for 4 more hours.
+          ⚠️ Session expires in less than 1 hour. Click "Renew" to extend for 12 more hours.
+        </p>
+      )}
+      
+      {!canRenew && renewalsLeft === 0 && (
+        <p className="text-xs text-gray-600 mt-1">
+          ℹ️ No renewals remaining. Session will end when timer reaches zero.
         </p>
       )}
     </div>
@@ -367,9 +455,11 @@ const TopicManager: React.FC<TopicManagerProps> = ({
 };
 
 const Life4TodayApp: React.FC = () => {
-  // Session hooks
+  // Session hooks - updated to use new session system
   const [session, setSession] = useState<UserSession | null>(null);
   const [sessionTimeRemaining, setSessionTimeRemaining] = useState<number>(0);
+  const [canRenew, setCanRenew] = useState<boolean>(false);
+  const [renewalsLeft, setRenewalsLeft] = useState<number>(0);
 
   // Game logic hooks
   const [playerTopics, setPlayerTopics] = useState<Topic[]>([]);
@@ -412,13 +502,13 @@ const Life4TodayApp: React.FC = () => {
     }
   }, [getRandomTopics]);
 
-  // Session management
+  // Session management - Updated to use new SessionManager
   const saveSession = useCallback((gameId: string, playerId: string, playerName: string, playerTopics: Topic[], lockedTopics: Topic[]) => {
     const newSession: UserSession = {
       gameId, playerId, playerName,
       playerTopics: playerTopics.map(t => t.toString()),
       lockedTopics: lockedTopics.map(t => t.toString()),
-      createdAt: Date.now(), lastActive: Date.now()
+      createdAt: Date.now(), lastActive: Date.now(), renewals: 0
     };
     SessionManager.saveSession(newSession);
     setSession(newSession);
@@ -434,12 +524,23 @@ const Life4TodayApp: React.FC = () => {
     SessionManager.clearSession();
     setSession(null);
     setSessionTimeRemaining(0);
+    setCanRenew(false);
+    setRenewalsLeft(0);
   }, []);
 
   const renewSession = useCallback(() => {
-    SessionManager.renewSession();
-    const renewedSession = SessionManager.loadSession();
-    setSession(renewedSession);
+    const success = SessionManager.renewSession();
+    if (success) {
+      const renewedSession = SessionManager.loadSession();
+      setSession(renewedSession);
+      // Force update session info immediately
+      const sessionInfo = SessionManager.getSessionInfo();
+      setSessionTimeRemaining(sessionInfo.timeRemaining);
+      setCanRenew(sessionInfo.canRenew);
+      setRenewalsLeft(sessionInfo.renewalsLeft);
+      return true;
+    }
+    return false;
   }, []);
 
   const restorePlayerFromSession = useCallback((sessionData: UserSession): { player: Player; topics: Topic[]; locked: Topic[] } => {
@@ -454,7 +555,7 @@ const Life4TodayApp: React.FC = () => {
 
   const hasValidSession = !!session && sessionTimeRemaining > 0;
 
-  // Effects
+  // Effects - Updated to use new session system
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const gameParam = urlParams.get('game');
@@ -466,14 +567,17 @@ const Life4TodayApp: React.FC = () => {
     if (savedSession) setSession(savedSession);
   }, []);
 
+  // Updated session timer effect
   useEffect(() => {
-    const updateTimeRemaining = () => {
+    const updateSessionInfo = () => {
       const sessionInfo = SessionManager.getSessionInfo();
       setSessionTimeRemaining(sessionInfo.timeRemaining);
+      setCanRenew(sessionInfo.canRenew);
+      setRenewalsLeft(sessionInfo.renewalsLeft);
       if (!sessionInfo.isActive && session) clearSession();
     };
-    updateTimeRemaining();
-    const interval = setInterval(updateTimeRemaining, 60000);
+    updateSessionInfo();
+    const interval = setInterval(updateSessionInfo, 60000);
     return () => clearInterval(interval);
   }, [session, clearSession]);
 
@@ -731,6 +835,14 @@ const Life4TodayApp: React.FC = () => {
     window.history.pushState({}, '', '/');
   }, [clearSession]);
 
+  // Updated session renew handler
+  const handleSessionRenew = useCallback(() => {
+    const success = renewSession();
+    if (!success) {
+      setError('Unable to renew session. Maximum renewals reached or session invalid.');
+    }
+  }, [renewSession]);
+
   // Generate collage function
   const generateCollage = useCallback(async () => {
     const canvas = canvasRef.current;
@@ -826,6 +938,7 @@ const Life4TodayApp: React.FC = () => {
                 <div>
                   <p className="text-sm font-medium text-blue-800">Previous Session Found</p>
                   <p className="text-xs text-blue-600">Game: {session?.gameId} | Player: {session?.playerName}</p>
+                  <p className="text-xs text-blue-500">Time left: {SessionManager.formatTimeRemaining(sessionTimeRemaining)}</p>
                 </div>
                 <button onClick={restoreFromSession} disabled={loading} className="text-xs bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 disabled:opacity-50">
                   {loading ? 'Restoring...' : 'Continue'}
@@ -929,8 +1042,10 @@ const Life4TodayApp: React.FC = () => {
         <div className="mb-6">
           <SessionInfo
             timeRemaining={sessionTimeRemaining}
+            canRenew={canRenew}
+            renewalsLeft={renewalsLeft}
             onSync={syncPlayerState}
-            onRenew={renewSession}
+            onRenew={handleSessionRenew}
             onClear={handleSessionClear}
             isSyncing={syncing}
             formatTime={SessionManager.formatTimeRemaining}
