@@ -3,6 +3,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Upload, Camera, Share2, Check, X, Download, Shuffle, Heart, Users, Eye, Clock, RefreshCw, LogOut, AlertTriangle } from 'lucide-react';
 
+
 // Types and constants
 interface Photo {
   id: string;
@@ -480,6 +481,9 @@ const Life4TodayApp: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [syncing, setSyncing] = useState<boolean>(false);
+  const [otherPlayersPhotos, setOtherPlayersPhotos] = useState<Map<string, Photo[]>>(new Map());
+  const [loadingPlayerPhotos, setLoadingPlayerPhotos] = useState<Set<string>>(new Set());
+  const [selectedPlayerPhotos, setSelectedPlayerPhotos] = useState<{player: Player, photos: Photo[]} | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -542,6 +546,36 @@ const Life4TodayApp: React.FC = () => {
     }
     return false;
   }, []);
+
+  const loadOtherPlayersPhotos = useCallback(async () => {
+    if (!gameInfo || gameInfo.players.length === 0) return;
+    
+    const otherPlayers = gameInfo.players.filter(p => p.id !== currentPlayer.id);
+    const newPhotosMap = new Map(otherPlayersPhotos);
+    
+    for (const player of otherPlayers) {
+      if (!newPhotosMap.has(player.id) && !loadingPlayerPhotos.has(player.id)) {
+        setLoadingPlayerPhotos(prev => new Set(prev).add(player.id));
+        
+        try {
+          const response = await ApiService.getPlayerPhotos(gameId, player.id);
+          if (response.success && response.photos) {
+            newPhotosMap.set(player.id, response.photos);
+          }
+        } catch (error) {
+          console.error(`Failed to load photos for player ${player.name}:`, error);
+        } finally {
+          setLoadingPlayerPhotos(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(player.id);
+            return newSet;
+          });
+        }
+      }
+    }
+    
+    setOtherPlayersPhotos(newPhotosMap);
+  }, [gameInfo, gameId, currentPlayer.id, otherPlayersPhotos, loadingPlayerPhotos]);
 
   const restorePlayerFromSession = useCallback((sessionData: UserSession): { player: Player; topics: Topic[]; locked: Topic[] } => {
     const topics = sessionData.playerTopics.filter((topic): topic is Topic => ALL_TOPICS.includes(topic as Topic));
@@ -618,6 +652,12 @@ const Life4TodayApp: React.FC = () => {
       return () => clearInterval(interval);
     }
   }, [gameState, gameId]);
+
+  useEffect(() => {
+    if (gameState === 'viewing' && gameInfo) {
+      loadOtherPlayersPhotos();
+    }
+  }, [gameState, gameInfo, loadOtherPlayersPhotos]);
 
   // Handlers
   const restoreFromSession = useCallback(async () => {
@@ -969,46 +1009,241 @@ const Life4TodayApp: React.FC = () => {
   }
 
   // Viewing other players screen
+  // Enhanced Viewing other players screen
   if (gameState === 'viewing') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-pink-400 to-purple-600 p-4">
+        {/* Header */}
         <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
           <div className="flex justify-between items-center">
             <div>
               <h1 className="text-2xl font-bold bg-gradient-to-r from-pink-500 to-purple-600 bg-clip-text text-transparent">Life4Today - All Players</h1>
               <p className="text-gray-600">Game ID: {gameId}</p>
             </div>
-            <button onClick={() => setGameState('playing')} className="bg-gradient-to-r from-pink-500 to-purple-600 text-white px-4 py-2 rounded-xl hover:shadow-lg transition-all duration-200">
-              Back to My Game
-            </button>
+            <div className="flex gap-2">
+              <button 
+                onClick={loadOtherPlayersPhotos} 
+                disabled={loadingPlayerPhotos.size > 0}
+                className="flex items-center gap-2 bg-blue-500 text-white px-4 py-2 rounded-xl hover:bg-blue-600 disabled:opacity-50 transition-all duration-200"
+              >
+                <RefreshCw size={16} className={loadingPlayerPhotos.size > 0 ? 'animate-spin' : ''} />
+                {loadingPlayerPhotos.size > 0 ? 'Loading...' : 'Refresh'}
+              </button>
+              <button 
+                onClick={() => setGameState('playing')} 
+                className="bg-gradient-to-r from-pink-500 to-purple-600 text-white px-4 py-2 rounded-xl hover:shadow-lg transition-all duration-200"
+              >
+                Back to My Game
+              </button>
+            </div>
           </div>
         </div>
+
+        {/* Photo Detail Modal */}
+        {selectedPlayerPhotos && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setSelectedPlayerPhotos(null)}>
+            <div className="bg-white rounded-2xl max-w-4xl max-h-[90vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold">{selectedPlayerPhotos.player.name}'s Photos</h3>
+                <button 
+                  onClick={() => setSelectedPlayerPhotos(null)}
+                  className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {selectedPlayerPhotos.photos.map((photo) => (
+                  <div key={photo.id} className="relative group">
+                    <img 
+                      src={ApiService.getPhotoUrl(photo.url)} 
+                      alt={photo.topic} 
+                      className="w-full h-64 object-cover rounded-lg shadow-md"
+                    />
+                    <div className="absolute bottom-2 left-2 bg-black bg-opacity-70 text-white text-sm px-3 py-1 rounded capitalize font-medium">
+                      {photo.topic}
+                    </div>
+                    <div className="absolute top-2 right-2 bg-white bg-opacity-90 text-gray-700 text-xs px-2 py-1 rounded">
+                      {new Date(photo.uploadedAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Players Grid */}
         <div className="bg-white rounded-2xl shadow-lg p-6">
-          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+          <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
             <Users size={24} />
             All Players ({gameInfo?.players.length || 0})
           </h2>
-          <div className="space-y-4">
-            {gameInfo?.players.map((player) => (
-              <div key={player.id} className="border border-gray-200 rounded-xl p-4">
-                <div className="flex justify-between items-center mb-3">
-                  <div>
-                    <h3 className="font-semibold text-lg">{player.name}</h3>
-                    <p className="text-sm text-gray-600">{player.photoCount}/4 topics completed</p>
+          
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {gameInfo?.players.map((player) => {
+              const playerPhotos = otherPlayersPhotos.get(player.id) || [];
+              const isLoadingPhotos = loadingPlayerPhotos.has(player.id);
+              const isCurrentPlayer = player.id === currentPlayer.id;
+              
+              return (
+                <div key={player.id} className={`border rounded-xl p-4 ${isCurrentPlayer ? 'border-pink-300 bg-pink-50' : 'border-gray-200'}`}>
+                  {/* Player Header */}
+                  <div className="flex justify-between items-center mb-4">
+                    <div>
+                      <h3 className="font-semibold text-lg flex items-center gap-2">
+                        {player.name}
+                        {isCurrentPlayer && <span className="text-pink-600 text-sm">(You)</span>}
+                      </h3>
+                      <p className="text-sm text-gray-600">{player.photoCount}/4 topics completed</p>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-2xl font-bold text-gray-800">{player.photoCount}/4</div>
+                      {player.photoCount === 4 && <div className="text-green-600 text-sm font-medium">Complete!</div>}
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <div className="text-2xl font-bold text-gray-800">{player.photoCount}/4</div>
-                    {player.photoCount === 4 && <div className="text-green-600 text-sm font-medium">Complete!</div>}
+
+                  {/* Completed Topics */}
+                  <div className="flex flex-wrap gap-2 mb-4">
+                    {player.completedTopics.map((topic) => (
+                      <span key={topic} className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm capitalize">
+                        ✅ {topic}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Photos Section */}
+                  {!isCurrentPlayer && (
+                    <div>
+                      <div className="flex justify-between items-center mb-3">
+                        <h4 className="font-medium text-gray-700">Photos</h4>
+                        {playerPhotos.length > 0 && (
+                          <button
+                            onClick={() => setSelectedPlayerPhotos({player, photos: playerPhotos})}
+                            className="text-blue-600 hover:text-blue-800 text-sm font-medium transition-colors"
+                          >
+                            View All ({playerPhotos.length})
+                          </button>
+                        )}
+                      </div>
+                      
+                      {isLoadingPhotos ? (
+                        <div className="flex items-center justify-center h-24 bg-gray-100 rounded-lg">
+                          <RefreshCw size={20} className="animate-spin text-gray-500" />
+                          <span className="ml-2 text-gray-500">Loading photos...</span>
+                        </div>
+                      ) : playerPhotos.length > 0 ? (
+                        <div className="grid grid-cols-2 gap-2">
+                          {playerPhotos.slice(0, 4).map((photo) => (
+                            <div key={photo.id} className="relative group cursor-pointer" onClick={() => setSelectedPlayerPhotos({player, photos: playerPhotos})}>
+                              <img 
+                                src={ApiService.getPhotoUrl(photo.url)} 
+                                alt={photo.topic} 
+                                className="w-full h-24 object-cover rounded-lg shadow-sm hover:shadow-md transition-shadow"
+                              />
+                              <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all rounded-lg flex items-center justify-center">
+                                <Eye size={16} className="text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                              </div>
+                              <div className="absolute bottom-1 left-1 bg-black bg-opacity-70 text-white text-xs px-2 py-1 rounded capitalize">
+                                {photo.topic}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 bg-gray-50 rounded-lg">
+                          <Camera size={24} className="mx-auto text-gray-400 mb-2" />
+                          <p className="text-gray-500 text-sm">No photos uploaded yet</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Current Player Photos */}
+                  {isCurrentPlayer && currentPlayer.photos.length > 0 && (
+                    <div>
+                      <h4 className="font-medium text-gray-700 mb-3">Your Photos</h4>
+                      <div className="grid grid-cols-2 gap-2">
+                        {currentPlayer.photos.slice(0, 4).map((photo) => (
+                          <div key={photo.id} className="relative">
+                            <img 
+                              src={ApiService.getPhotoUrl(photo.url)} 
+                              alt={photo.topic} 
+                              className="w-full h-24 object-cover rounded-lg shadow-sm"
+                            />
+                            <div className="absolute bottom-1 left-1 bg-black bg-opacity-70 text-white text-xs px-2 py-1 rounded capitalize">
+                              {photo.topic}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Progress Bar */}
+                  <div className="mt-4">
+                    <div className="flex justify-between text-sm text-gray-600 mb-1">
+                      <span>Progress</span>
+                      <span>{player.photoCount}/4</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className={`h-2 rounded-full transition-all duration-300 ${
+                          player.photoCount === 4 
+                            ? 'bg-green-500' 
+                            : player.photoCount >= 2 
+                            ? 'bg-yellow-500' 
+                            : 'bg-blue-500'
+                        }`}
+                        style={{ width: `${(player.photoCount / 4) * 100}%` }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  {/* Last Activity */}
+                  <div className="mt-3 text-xs text-gray-500 text-center">
+                    Last active: {new Date(player.lastActive).toLocaleString()}
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {player.completedTopics.map((topic) => (
-                    <span key={topic} className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm capitalize">✅ {topic}</span>
-                  ))}
+              );
+            })}
+          </div>
+
+          {/* Overall Game Stats */}
+          {gameInfo && gameInfo.players.length > 1 && (
+            <div className="mt-8 bg-gray-50 rounded-xl p-4">
+              <h3 className="font-semibold mb-3 flex items-center gap-2">
+                <span>🏆</span>
+                Game Statistics
+              </h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+                <div>
+                  <div className="text-2xl font-bold text-blue-600">
+                    {gameInfo.players.length}
+                  </div>
+                  <div className="text-sm text-gray-600">Total Players</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold text-green-600">
+                    {gameInfo.players.filter(p => p.photoCount === 4).length}
+                  </div>
+                  <div className="text-sm text-gray-600">Completed</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold text-purple-600">
+                    {gameInfo.players.reduce((sum, p) => sum + p.photoCount, 0)}
+                  </div>
+                  <div className="text-sm text-gray-600">Total Photos</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold text-orange-600">
+                    {Math.round((gameInfo.players.reduce((sum, p) => sum + p.photoCount, 0) / (gameInfo.players.length * 4)) * 100)}%
+                  </div>
+                  <div className="text-sm text-gray-600">Overall Progress</div>
                 </div>
               </div>
-            ))}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     );
