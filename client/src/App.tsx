@@ -956,76 +956,212 @@ const Life4TodayApp: React.FC = () => {
     }
   }, [renewSession]);
 
-  // Generate collage function
-  const generateCollage = useCallback(async () => {
-    const canvas = canvasRef.current;
-    if (!canvas || currentPlayer.photos.length === 0) return;
+  // Alternative generateCollage function that converts images to data URLs first
+// Add this utility function first, before the generateCollage function
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+const convertImageToDataURL = (src: string): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Failed to get canvas context'));
+        return;
+      }
+      
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+      
+      try {
+        const dataURL = canvas.toDataURL('image/jpeg', 0.8);
+        resolve(dataURL);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    img.onerror = () => reject(new Error(`Failed to load image: ${src}`));
+    img.src = src;
+  });
+};
 
-    canvas.width = 400;
-    canvas.height = 600;
+// Define types for the image results
+type PhotoResult = {
+  type: 'photo';
+  dataURL: string;
+  photo: Photo;
+  index: number;
+};
 
-    const gradient = ctx.createLinearGradient(0, 0, 0, 600);
-    gradient.addColorStop(0, '#E91E63');
-    gradient.addColorStop(1, '#8E24AA');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, 400, 600);
+type LogoResult = {
+  type: 'logo';
+  dataURL: string | null;
+};
 
-    const positions = [
-      { x: 20, y: 20, width: 170, height: 240 },
-      { x: 210, y: 20, width: 170, height: 240 },
-      { x: 20, y: 340, width: 170, height: 240 },
-      { x: 210, y: 340, width: 170, height: 240 }
-    ];
+type ImageResult = PhotoResult | LogoResult;
 
+// Updated generateCollage function using data URLs
+const generateCollage = useCallback(async () => {
+  const canvas = canvasRef.current;
+  if (!canvas || currentPlayer.photos.length === 0) return;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  canvas.width = 400;
+  canvas.height = 600;
+
+  // Create gradient background
+  const gradient = ctx.createLinearGradient(0, 0, 0, 600);
+  gradient.addColorStop(0, '#E91E63');
+  gradient.addColorStop(1, '#8E24AA');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 400, 600);
+
+  // Photo positions
+  const positions = [
+    { x: 20, y: 20, width: 170, height: 240 },
+    { x: 210, y: 20, width: 170, height: 240 },
+    { x: 20, y: 340, width: 170, height: 240 },
+    { x: 210, y: 340, width: 170, height: 240 }
+  ];
+
+  try {
+    // Convert all images to data URLs first
+    const imagePromises: Promise<ImageResult>[] = [];
+    
+    // Convert user photos
     for (let i = 0; i < Math.min(4, currentPlayer.photos.length); i++) {
       const photo = currentPlayer.photos[i];
-      const pos = positions[i];
-      
-      const img = new Image();
-      img.onload = () => {
-        ctx.save();
-        ctx.beginPath();
-        if (ctx.roundRect) {
-          ctx.roundRect(pos.x, pos.y, pos.width, pos.height, 10);
-        } else {
-          ctx.rect(pos.x, pos.y, pos.width, pos.height);
-        }
-        ctx.clip();
-        ctx.drawImage(img, pos.x, pos.y, pos.width, pos.height);
-        ctx.restore();
+      imagePromises.push(
+        convertImageToDataURL(ApiService.getPhotoUrl(photo.url))
+          .then((dataURL): PhotoResult => ({ type: 'photo', dataURL, photo, index: i }))
+      );
+    }
+    
+    // Convert logo
+    imagePromises.push(
+      convertImageToDataURL('/assets/Life4TodayLogo.png')
+        .then((dataURL): LogoResult => ({ type: 'logo', dataURL }))
+        .catch((): LogoResult => ({ type: 'logo', dataURL: null })) // Continue without logo if it fails
+    );
+
+    // Wait for all images to be converted
+    const imageResults = await Promise.all(imagePromises);
+    
+    // Draw user photos
+    for (const result of imageResults) {
+      if (result.type === 'photo') {
+        const { dataURL, photo, index } = result;
+        const pos = positions[index];
         
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        ctx.fillRect(pos.x, pos.y + pos.height - 30, pos.width, 30);
-        ctx.fillStyle = 'white';
-        ctx.font = '12px Arial';
-        ctx.fillText(photo.topic, pos.x + 5, pos.y + pos.height - 10);
-      };
-      img.src = ApiService.getPhotoUrl(photo.url);
+        const img = new Image();
+        await new Promise<void>((resolve) => {
+          img.onload = () => {
+            ctx.save();
+            
+            // Create rounded rectangle clipping path
+            ctx.beginPath();
+            if (ctx.roundRect) {
+              ctx.roundRect(pos.x, pos.y, pos.width, pos.height, 10);
+            } else {
+              const radius = 10;
+              ctx.moveTo(pos.x + radius, pos.y);
+              ctx.lineTo(pos.x + pos.width - radius, pos.y);
+              ctx.quadraticCurveTo(pos.x + pos.width, pos.y, pos.x + pos.width, pos.y + radius);
+              ctx.lineTo(pos.x + pos.width, pos.y + pos.height - radius);
+              ctx.quadraticCurveTo(pos.x + pos.width, pos.y + pos.height, pos.x + pos.width - radius, pos.y + pos.height);
+              ctx.lineTo(pos.x + radius, pos.y + pos.height);
+              ctx.quadraticCurveTo(pos.x, pos.y + pos.height, pos.x, pos.y + pos.height - radius);
+              ctx.lineTo(pos.x, pos.y + radius);
+              ctx.quadraticCurveTo(pos.x, pos.y, pos.x + radius, pos.y);
+            }
+            ctx.clip();
+            
+            // Draw the photo
+            ctx.drawImage(img, pos.x, pos.y, pos.width, pos.height);
+            ctx.restore();
+            
+            // Add topic label with background
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(pos.x, pos.y + pos.height - 30, pos.width, 30);
+            
+            // Add topic text
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 12px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(photo.topic.charAt(0).toUpperCase() + photo.topic.slice(1), pos.x + 5, pos.y + pos.height - 10);
+            
+            resolve();
+          };
+          img.src = dataURL;
+        });
+      }
     }
 
-    // ctx.fillStyle = 'white';
-    // ctx.font = 'bold 24px Arial';
-    // ctx.fillText('Life4', 160, 300);
-    // ctx.fillStyle = '#E91E63';
-    // ctx.fillRect(210, 275, 40, 30);
-    // ctx.fillStyle = 'white';
-    // ctx.fillText('4', 225, 295);
-    // ctx.fillStyle = 'white';
-    // ctx.font = 'bold 20px Arial';
-    // ctx.fillText('TODAY', 140, 330);
-  }, [currentPlayer.photos]);
+    // Draw logo if available
+    const logoResult = imageResults.find((r): r is LogoResult => r.type === 'logo');
+    if (logoResult && logoResult.dataURL) {
+      const logoImg = new Image();
+      await new Promise<void>((resolve) => {
+        logoImg.onload = () => {
+          const logoWidth = 120;
+          const logoHeight = 80;
+          const logoX = (canvas.width - logoWidth) / 2;
+          const logoY = (canvas.height - logoHeight) / 2;
 
-  const downloadCollage = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const link = document.createElement('a');
-    link.download = `life4today-${currentPlayer.name}-${gameId}.png`;
-    link.href = canvas.toDataURL();
-    link.click();
-  }, [currentPlayer.name, gameId]);
+          ctx.save();
+          
+          // Optional: Add subtle semi-transparent background behind logo
+          // Remove or reduce opacity if you want the logo fully transparent
+          // ctx.fillStyle = 'rgba(255, 255, 255, 0.1)'; // Much more subtle
+          ctx.beginPath();
+          // if (ctx.roundRect) {
+          //   ctx.roundRect(logoX - 5, logoY - 5, logoWidth + 10, logoHeight + 10, 10);
+          // } else {
+          //   ctx.rect(logoX - 5, logoY - 5, logoWidth + 10, logoHeight + 10);
+          // }
+          // ctx.fill();
+          
+          // // Add very subtle shadow
+          // ctx.shadowColor = 'rgba(0, 0, 0, 0.1)';
+          // ctx.shadowBlur = 5;
+          // ctx.shadowOffsetX = 0;
+          // ctx.shadowOffsetY = 1;
+          
+          // Draw logo with transparency preserved
+          ctx.drawImage(logoImg, logoX, logoY, logoWidth, logoHeight);
+          ctx.restore();
+          
+          resolve();
+        };
+        if (logoResult.dataURL)
+          logoImg.src = logoResult.dataURL;
+        else {
+          logoImg.src = '';
+        }
+      });
+    }
+
+    console.log('Collage generation complete');
+    
+  } catch (error) {
+    console.error('Error generating collage:', error);
+    // You might want to show an error message to the user here
+  }
+}, [currentPlayer.photos]);
+
+const downloadCollage = useCallback(() => {
+  const canvas = canvasRef.current;
+  if (!canvas) return;
+  
+  const link = document.createElement('a');
+  link.download = `life4today-${currentPlayer.name}-${gameId}.png`; // Use PNG format
+  link.href = canvas.toDataURL('image/png'); // PNG preserves transparency
+  link.click();
+}, [currentPlayer.name, gameId]);
 
   const copyShareText = useCallback(async (type: 'completed' | 'reminder') => {
     const completed = getCompletedTopics();
